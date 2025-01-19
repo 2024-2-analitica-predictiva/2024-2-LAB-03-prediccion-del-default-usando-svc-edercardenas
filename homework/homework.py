@@ -95,3 +95,173 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+print('Importando librerías...')
+import pandas as pd
+import gzip
+import json
+import os
+import pickle
+import numpy as np
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.metrics import precision_score, balanced_accuracy_score, recall_score, f1_score, confusion_matrix
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.decomposition import PCA
+from sklearn.svm import SVC as svm
+import warnings
+warnings.filterwarnings("ignore")
+
+
+
+# Paso 1.
+print('Paso 1...')
+# Cargamos los datos
+df_train = pd.read_csv('files/input/train_data.csv.zip', index_col=False, compression="zip")
+df_test = pd.read_csv('files/input/test_data.csv.zip', index_col=False, compression="zip")
+
+# Renombramos la columna "default payment next month" a "default"
+df_train = df_train.rename(columns={"default payment next month": "default"})
+df_test = df_test.rename(columns={"default payment next month": "default"})
+
+# Removemos la columna "ID"
+df_train = df_train.drop(columns=["ID"])
+df_test = df_test.drop(columns=["ID"])
+
+# Eliminamos los registros con informacion no disponible
+df_train = df_train.dropna()
+df_train = df_train[df_train['EDUCATION'] != 0]
+df_train = df_train[df_train['MARRIAGE'] != 0]
+df_test = df_test.dropna()
+df_test = df_test[df_test['EDUCATION'] != 0]
+df_test = df_test[df_test['MARRIAGE'] != 0]
+
+# Agrupamos los valores de EDUCATION > 4 en la categoria "others"
+df_train.loc[df_train["EDUCATION"] > 4, "EDUCATION"] = 4
+df_test.loc[df_test["EDUCATION"] > 4, "EDUCATION"] = 4
+
+
+# Paso 2.
+print('Paso 2...')
+# Divida los datasets en x_train, y_train, x_test, y_test.
+x_train = df_train.drop(columns=["default"])
+y_train = df_train["default"]
+x_test = df_test.drop(columns=["default"])
+y_test = df_test["default"]
+
+
+# Paso 3.
+print('Paso 3...')
+# Cree un pipeline para el modelo de clasificación. Este pipeline debe
+# contener las siguientes capas:
+# - Transforma las variables categoricas usando el método
+#   one-hot-encoding.
+# - Descompone la matriz de entrada usando PCA. El PCA usa todas las componentes.
+# - Estandariza la matriz de entrada.
+# - Selecciona las K columnas mas relevantes de la matrix de entrada.
+# - Ajusta una maquina de vectores de soporte (svm).
+
+# Creamos el transformer
+transformer = ColumnTransformer(
+    transformers=[
+        ("ohe", OneHotEncoder(dtype="int"), 
+         ["SEX", "EDUCATION", "MARRIAGE"]),
+    ],
+    remainder=StandardScaler(),
+)
+
+# Creamos el pipeline
+pipeline = Pipeline(
+    steps=[
+        ("transformer", transformer),
+        ("pca", PCA(n_components=22)),
+        ("feature_selection", SelectKBest(score_func=f_classif)),
+        ("classifier", svm(random_state=42)),
+    ],
+    verbose=False,
+)
+
+
+# Paso 4.
+print('Paso 4...')
+params = {
+    # "feature_selection__k": [1, 5, 10, 13, 15, 20, 22],
+    # "classifier__gamma": [0.05, 0.1, 0.15, 0.2, 0.3, 0.5],
+    "feature_selection__k": [13, 14],
+    "classifier__gamma": [0.09, 0.1],
+}
+grid = GridSearchCV(pipeline, params, cv=10, scoring='balanced_accuracy', n_jobs=-1, refit=True)
+grid.fit(x_train, y_train)
+
+print('Mejores hiperparametros:', grid.best_params_)
+print('score_test:', grid.score(x_test, y_test))
+
+
+# Paso 5.
+print('Paso 5...')
+# Guarde el modelo (comprimido con gzip) como "files/models/model.pkl.gz".
+if not os.path.exists("files/models"):
+        os.makedirs("files/models")
+
+with gzip.open("files/models/model.pkl.gz", "wb") as f:
+    pickle.dump(grid, f)
+
+
+# Paso 6.
+print('Paso 6...')
+metrics = {
+    "type": "metrics",
+    "dataset": "train",
+    "precision": precision_score(y_train, grid.predict(x_train)),
+    "balanced_accuracy": balanced_accuracy_score(y_train, grid.predict(x_train)),
+    "recall": recall_score(y_train, grid.predict(x_train)),
+    "f1_score": f1_score(y_train, grid.predict(x_train))
+}
+
+if not os.path.exists("files/output"):
+        os.makedirs("files/output")
+
+with open("files/output/metrics.json", "w") as f:
+    json.dump(metrics, f)
+    
+metrics = {
+    "type": "metrics",
+    "dataset": "test",
+    "precision": precision_score(y_test, grid.predict(x_test)),
+    "balanced_accuracy": balanced_accuracy_score(y_test, grid.predict(x_test)),
+    "recall": recall_score(y_test, grid.predict(x_test)),
+    "f1_score": f1_score(y_test, grid.predict(x_test))
+}
+
+with open("files/output/metrics.json", "a") as f:
+    f.write('\n')
+
+with open("files/output/metrics.json", "a") as f:
+    f.write(json.dumps(metrics) + '\n')
+
+
+# Paso 7.
+print('Paso 7...')
+cm_train = confusion_matrix(y_train, grid.predict(x_train))
+cm_test = confusion_matrix(y_test, grid.predict(x_test))
+metrics = {
+    "type": "cm_matrix",
+    "dataset": "train",
+    "true_0": {"predicted_0": int(cm_train[0, 0]), "predicted_1": int(cm_train[0, 1])},
+    "true_1": {"predicted_0": int(cm_train[1, 0]), "predicted_1": int(cm_train[1, 1])}
+}
+with open("files/output/metrics.json", "a") as f:
+    f.write(json.dumps(metrics) + '\n')
+
+metrics = {
+    "type": "cm_matrix",
+    "dataset": "test",
+    "true_0": {"predicted_0": int(cm_test[0, 0]), "predicted_1": int(cm_test[0, 1])},
+    "true_1": {"predicted_0": int(cm_test[1, 0]), "predicted_1": int(cm_test[1, 1])}
+}
+with open("files/output/metrics.json", "a") as f:
+    f.write(json.dumps(metrics))
